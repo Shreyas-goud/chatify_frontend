@@ -1,57 +1,67 @@
 import { create } from "zustand";
-import { axiosInstance, BACKEND_URL, errorMessage } from "../lib/axios";
 import toast from "react-hot-toast";
-import { io } from "socket.io-client";
+import { axiosInstance, errorMessage } from "../lib/axios";
 
-export const useAuthStore = create((set, get) => ({
+const timezone = () => {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    return undefined;
+  }
+};
+
+export const useAuthStore = create((set) => ({
   authUser: null,
   isCheckingAuth: true,
-  isSigningUp: false,
-  isLoggingIn: false,
-  socket: null,
-  onlineUsers: [],
+  isSubmitting: false,
 
+  // Only a 401 means signed out. A timeout or 5xx usually means Render's free server is still
+  // waking up, so keep the loader ("Waking the server") and retry for up to about two minutes
+  // rather than send a signed-in person to the login page.
   checkAuth: async () => {
-    try {
-      const res = await axiosInstance.get("/auth/check");
-      set({ authUser: res.data });
-      get().connectSocket();
-    } catch (error) {
-      console.log("Error in authCheck:", error);
-      set({ authUser: null });
-    } finally {
-      set({ isCheckingAuth: false });
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const res = await axiosInstance.get("/auth/check");
+        set({ authUser: res.data, isCheckingAuth: false });
+        return;
+      } catch (error) {
+        const status = error.response?.status;
+        const serverDown = !status || status >= 500;
+        if (!serverDown || attempt >= 30) {
+          set({ authUser: null, isCheckingAuth: false });
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, Math.min(1000 * 2 ** attempt, 4000)));
+      }
     }
   },
 
+  // Returns true on success, so the form can move on; errors are shown as toasts.
   signup: async (data) => {
-    set({ isSigningUp: true });
+    set({ isSubmitting: true });
     try {
-      const res = await axiosInstance.post("/auth/signup", data);
+      const res = await axiosInstance.post("/auth/signup", { ...data, timezone: timezone() });
       set({ authUser: res.data });
-
-      toast.success("Account created successfully!");
-      get().connectSocket();
+      return true;
     } catch (error) {
       toast.error(errorMessage(error));
+      return false;
     } finally {
-      set({ isSigningUp: false });
+      set({ isSubmitting: false });
     }
   },
 
   login: async (data) => {
-    set({ isLoggingIn: true });
+    set({ isSubmitting: true });
     try {
-      const res = await axiosInstance.post("/auth/login", data);
+      const res = await axiosInstance.post("/auth/login", { ...data, timezone: timezone() });
       set({ authUser: res.data });
-
-      toast.success("Logged in successfully");
-
-      get().connectSocket();
+      return true;
     } catch (error) {
       toast.error(errorMessage(error));
+      return false;
     } finally {
-      set({ isLoggingIn: false });
+      set({ isSubmitting: false });
     }
   },
 
@@ -59,11 +69,8 @@ export const useAuthStore = create((set, get) => ({
     try {
       await axiosInstance.post("/auth/logout");
       set({ authUser: null });
-      toast.success("Logged out successfully");
-      get().disconnectSocket();
     } catch (error) {
-      toast.error("Error logging out");
-      console.log("Logout error:", error);
+      toast.error(errorMessage(error));
     }
   },
 
@@ -71,32 +78,10 @@ export const useAuthStore = create((set, get) => ({
     try {
       const res = await axiosInstance.put("/auth/update-profile", data);
       set({ authUser: res.data });
-      toast.success("Profile updated successfully");
+      return true;
     } catch (error) {
-      console.log("Error in update profile:", error);
       toast.error(errorMessage(error));
+      return false;
     }
-  },
-
-  connectSocket: () => {
-    const { authUser } = get();
-    if (!authUser || get().socket?.connected) return;
-
-    const socket = io(BACKEND_URL, {
-      withCredentials: true, // this ensures cookies are sent with the connection
-    });
-
-    socket.connect();
-
-    set({ socket });
-
-    // listen for online users event
-    socket.on("getOnlineUsers", (userIds) => {
-      set({ onlineUsers: userIds });
-    });
-  },
-
-  disconnectSocket: () => {
-    if (get().socket?.connected) get().socket.disconnect();
   },
 }));
