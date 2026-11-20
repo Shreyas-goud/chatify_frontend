@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { axiosInstance } from "../lib/axios";
+import { axiosInstance, errorMessage } from "../lib/axios";
 import toast from "react-hot-toast";
 import { useAuthStore } from "./useAuthStore";
 
@@ -27,7 +27,7 @@ export const useChatStore = create((set, get) => ({
       const res = await axiosInstance.get("/messages/contacts");
       set({ allContacts: res.data });
     } catch (error) {
-      toast.error(error.response.data.message);
+      toast.error(errorMessage(error));
     } finally {
       set({ isUsersLoading: false });
     }
@@ -38,7 +38,7 @@ export const useChatStore = create((set, get) => ({
       const res = await axiosInstance.get("/messages/chats");
       set({ chats: res.data });
     } catch (error) {
-      toast.error(error.response.data.message);
+      toast.error(errorMessage(error));
     } finally {
       set({ isUsersLoading: false });
     }
@@ -50,7 +50,7 @@ export const useChatStore = create((set, get) => ({
       const res = await axiosInstance.get(`/messages/${userId}`);
       set({ messages: res.data });
     } catch (error) {
-      toast.error(error.response?.data?.message || "Something went wrong");
+      toast.error(errorMessage(error));
     } finally {
       set({ isMessagesLoading: false });
     }
@@ -74,13 +74,15 @@ export const useChatStore = create((set, get) => ({
     // immidetaly update the ui by adding the message
     set({ messages: [...messages, optimisticMessage] });
 
+    // Work on the current list, not the one from before the send: replies that arrived over the
+    // socket meanwhile, and other messages still sending, must stay.
     try {
       const res = await axiosInstance.post(`/messages/send/${selectedUser._id}`, messageData);
-      set({ messages: messages.concat(res.data) });
+      set({ messages: get().messages.map((m) => (m._id === tempId ? res.data : m)) });
     } catch (error) {
       // remove optimistic message on failure
-      set({ messages: messages });
-      toast.error(error.response?.data?.message || "Something went wrong");
+      set({ messages: get().messages.filter((m) => m._id !== tempId) });
+      toast.error(errorMessage(error));
     }
   },
 
